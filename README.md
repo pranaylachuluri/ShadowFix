@@ -49,42 +49,51 @@ Shadow input, ground-truth mask, traditional correction, model output and ground
 
 | Path | Contents |
 | --- | --- |
-| `notebooks/shadow_removal_colab.ipynb` | End-to-end Colab run: dataset download and checks, training all model variants, evaluation, charts and the Gradio app, with outputs |
-| `app/shadowfix_app.py` | Standalone version of the Gradio app |
+| `shadowfix/` | Dataset loading, U-Net, region-weighted loss, PSNR/SSIM metrics, traditional baseline, checkpoints |
+| `train.py` | Train any variant (RGB, residual, mask-guided), resume, mixed precision, best/last checkpoints and history |
+| `evaluate.py` | Test-set PSNR, SSIM and shadow / non-shadow PSNR vs. the input and the traditional baseline, plus comparison images |
+| `inference.py` | Restore your own photos at full resolution (single image or folder, optional masks) |
+| `download_istd.py`, `inspect_dataset.py`, `sanity_check.py` | Get the data, preview it and run a one-batch check before training |
+| `app/shadowfix_app.py` | Gradio app with Automatic and Guided modes |
+| `notebooks/shadow_removal_colab.ipynb` | The original Colab run with all outputs |
 | `results/` | Metrics table, comparison charts and sample outputs |
-| `requirements.txt` | Python dependencies |
 
 ## Running it
 
-The notebook is written for Google Colab with a GPU runtime. It expects the training package (`train.py`, `evaluate.py`, `inference.py`, `download_istd.py`) in `/content/shadow_removal_project` and stores checkpoints in Google Drive. Run the cells top to bottom.
-
-Training commands used for the final models:
-
 ```bash
-# RGB baseline
-python train.py --data-root data --output-dir runs/baseline --image-size 256 \
-  --batch-size 8 --epochs 50 --learning-rate 2e-4 --base-channels 32 \
-  --shadow-weight 1 --nonshadow-weight 1 --amp
+git clone https://github.com/pranaylachuluri/ShadowFix && cd ShadowFix
+pip install -r requirements.txt
 
-# Mask-guided U-Net (best model)
-python train.py --data-root data --output-dir runs/mask_guided --image-size 256 \
-  --batch-size 8 --epochs 50 --learning-rate 2e-4 --base-channels 32 \
-  --use-mask-input --shadow-weight 4 --nonshadow-weight 1 --edge-weight 0.05 --amp
+# 1. Data: ISTD from the authors' release (RAR archive; needs unrar)
+python download_istd.py --output-dir data --url "<link to ISTD_Dataset.rar>"
+python inspect_dataset.py --data-root data --split train --num-samples 5
+python sanity_check.py --data-root data --image-size 128 --batch-size 2
 
-# Evaluate against the shadow input and the traditional baseline
+# 2. Train (about 30 seconds per epoch on a Colab T4 at 256x256)
+python train.py --data-root data --output-dir runs/baseline --image-size 256 --batch-size 8 \
+  --epochs 50 --learning-rate 2e-4 --base-channels 32 --amp
+python train.py --data-root data --output-dir runs/mask_guided --image-size 256 --batch-size 8 \
+  --epochs 50 --learning-rate 2e-4 --base-channels 32 --use-mask-input \
+  --shadow-weight 4 --nonshadow-weight 1 --edge-weight 0.05 --amp
+python train.py --data-root data --output-dir runs/baseline_final --epochs 50 --learning-rate 1e-4 \
+  --output-mode residual --shadow-weight 6 --edge-weight 0.10 --amp
+python train.py --data-root data --output-dir runs/baseline_100 --epochs 100 --learning-rate 1e-4 \
+  --output-mode residual --shadow-weight 6 --edge-weight 0.10 --resume runs/baseline_final/last.pth --amp
+
+# 3. Evaluate on the 540 test images
 python evaluate.py --data-root data --checkpoint runs/mask_guided/best.pth \
   --output-dir evaluation/mask_guided --num-visuals 20 --include-traditional
+
+# 4. Use it
+python inference.py --checkpoint runs/baseline_final/best.pth --input my_photo.jpg --output-dir outputs
+python app/shadowfix_app.py --checkpoint runs/baseline_final/best.pth --share
 ```
 
-Launch the app locally once you have a checkpoint:
+On Colab, clone the repo instead of uploading a zip and run the same commands with `!`. Checkpoints (~89 MB each) are not stored in the repository.
 
-```bash
-pip install -r requirements.txt
-python app/shadowfix_app.py --project-dir path/to/shadow_removal_project \
-  --checkpoint runs/baseline_final/best.pth
-```
+`inference.py` runs the network at 256×256 and applies the upsampled correction to the full-resolution photo, so outputs keep the original size and detail. Mask-guided checkpoints need a shadow mask per image (`--mask` or `--mask-dir`).
 
-Checkpoints (~89 MB each) are not stored in this repository.
+**About this code.** The original training package from the capstone was lost, so this code was rebuilt from the notebook's commands and logs and the project report. It keeps the same command-line interface, U-Net (7.76M parameters at base width 32), region-weighted loss and metrics, and it has been tested end to end on a small sample. The results table above comes from the original runs and has not yet been reproduced with the rebuilt code.
 
 ## Limitations
 
